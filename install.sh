@@ -147,7 +147,42 @@ else
   printf "    bash install.sh --yes\n"
 fi
 
-# ── Step 6: Symlink CLI ──────────────────────────────────────────────────────
+# ── Step 6: Wire SubagentStop hook (--yes required) ──────────────────────────
+_step "Wiring SubagentStop hook..."
+WRITEBACK_SNIPPET="${REPO_DIR}/scripts/cellar-door-writeback-snippet.json"
+
+if [[ "${1:-}" == "--yes" ]]; then
+  # Idempotency check: skip if cast-memory-writeback is already referenced
+  if [ -f "$SETTINGS_FILE" ] && python3 -c "
+import json, sys
+try:
+    d = json.load(open('$SETTINGS_FILE'))
+except Exception:
+    sys.exit(1)
+hooks = d.get('hooks', {}).get('SubagentStop', [])
+for entry in hooks:
+    for h in entry.get('hooks', []):
+        if 'cast-memory-writeback' in h.get('command', ''):
+            sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+    _ok "SubagentStop hook already present in settings.local.json (idempotent)"
+  else
+    if command -v jq &>/dev/null; then
+      EXISTING="$(cat "$SETTINGS_FILE" 2>/dev/null || echo '{}')"
+      echo "$EXISTING" | jq --slurpfile snippet "$WRITEBACK_SNIPPET" \
+        '.hooks.SubagentStop += $snippet[0].hooks.SubagentStop' \
+        > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+      _ok "SubagentStop hook wired into settings.local.json"
+    else
+      _warn "jq not found — manually add hook entry from scripts/cellar-door-writeback-snippet.json"
+    fi
+  fi
+else
+  _warn "Skipping SubagentStop hook merge (pass --yes to auto-merge)"
+fi
+
+# ── Step 7: Symlink CLI ──────────────────────────────────────────────────────
 _step "Installing CLI..."
 LOCAL_BIN="${HOME}/.local/bin"
 CLI_SRC="${REPO_DIR}/bin/cellar"
@@ -176,6 +211,6 @@ printf "\n${C_BOLD}════════════════════�
 printf "${C_GREEN}cellar-door v${VERSION} installed.${C_RESET}\n\n"
 printf "  Scripts: ${SCRIPTS_DST} (${copied} files)\n"
 printf "\n${C_BOLD}Next steps:${C_RESET}\n"
-printf "  Phase 2 hook installed. Enable with: CAST_COG_ENABLED=1 claude\n"
+printf "  Phase 2+3 hooks installed. Enable with: CAST_COG_ENABLED=1 claude\n"
 printf "  Or add to ~/.zshrc: export CAST_COG_ENABLED=1\n"
 printf "  See ~/.claude/plans/cast-shared-cognition-roadmap.md for the full build plan.\n\n"
