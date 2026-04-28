@@ -117,12 +117,11 @@ def write_facts(facts: list[dict]) -> int:
         for fact in facts:
             conn.execute(
                 """
-                INSERT INTO agent_memories
+                INSERT OR IGNORE INTO agent_memories
                     (agent, type, name, description, content,
                      source_type, confidence, importance, decay_rate,
                      created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, 'inference', ?, 0.5, 0.0, ?, ?)
-                ON CONFLICT(agent, name) DO NOTHING
                 """,
                 (
                     "shared",
@@ -140,7 +139,7 @@ def write_facts(facts: list[dict]) -> int:
             ).fetchone()[0] > 0:
                 written += 1
             else:
-                _log(f"duplicate skipped (DO NOTHING): {fact['name']!r}")
+                _log(f"duplicate skipped (INSERT OR IGNORE): {fact['name']!r}")
         conn.execute("COMMIT")
     except Exception as e:
         conn.execute("ROLLBACK")
@@ -165,11 +164,11 @@ def main() -> None:
         _log(f"stdin parse error: {e}")
         sys.exit(0)
 
-    agent_name = data.get("agent_name", "")
+    agent_name = data.get("agent_type") or data.get("agent_name") or data.get("subagent_name") or ""
     if agent_name not in TRUSTED_AGENTS:
         sys.exit(0)
 
-    output = data.get("output", "")
+    output = data.get("last_assistant_message") or data.get("output") or ""
     if not output:
         sys.exit(0)
 

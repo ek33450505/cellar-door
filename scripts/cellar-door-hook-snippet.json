@@ -7,7 +7,10 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/scripts/cellar-door/cast-memory-inject.py",
-            "timeout": 1000
+            "timeout": 1000,
+            "env": {
+              "CAST_COG_ENABLED": "1"
+            }
           }
         ]
       }

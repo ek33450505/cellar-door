@@ -5,7 +5,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/cellar-door/cast-memory-writeback.py"
+            "command": "python3 ~/.claude/scripts/cellar-door/cast-memory-writeback.py",
+            "env": {
+              "CAST_COG_ENABLED": "1"
+            }
           }
         ]
       }
