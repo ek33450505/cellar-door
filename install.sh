@@ -3,7 +3,7 @@
 #
 # Usage: bash install.sh
 
-set -uo pipefail
+set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="$(cat "${REPO_DIR}/VERSION" 2>/dev/null || echo "unknown")"

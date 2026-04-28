@@ -29,7 +29,12 @@ def _resolve_db_path() -> str:
         '/var/folders',
         '/private/var/folders',
     )
-    if not any(resolved.startswith(prefix) for prefix in allowed_prefixes):
+
+    def _is_allowed(resolved: str, prefix: str) -> bool:
+        p = prefix.rstrip(os.sep)
+        return resolved == p or resolved.startswith(p + os.sep)
+
+    if not any(_is_allowed(resolved, p) for p in allowed_prefixes):
         print(
             f"ERROR: CAST_DB_PATH resolves to '{resolved}' which is outside allowed directories "
             f"({', '.join(allowed_prefixes)}). Refusing to run.",
@@ -196,6 +201,8 @@ def run_migration(db_path: str) -> None:
 
     if columns_added == 0 and not fts_was_new:
         print("Already migrated — skipping.")
+    elif columns_added == 0 and fts_was_new:
+        print("Migration complete (FTS5 table created from existing schema).")
     else:
         print("Migration complete.")
 
