@@ -78,9 +78,24 @@ if [ "$errors" -gt 0 ]; then
   _warn "${errors} script(s) failed to copy — check permissions"
 fi
 
-# ── Step 4: Phase 1 placeholder ─────────────────────────────────────────────
-_step "Schema migration..."
-_warn "Migration scripts will be wired in Phase 1"
+# ── Step 4: Phase 1 migration ────────────────────────────────────────────────
+_step "Running Phase 1 migration..."
+MIGRATION_SRC="${REPO_DIR}/scripts/migrate_phase1.py"
+MIGRATION_DST_DIR="${HOME}/.claude/scripts/cellar-door/migrations"
+MIGRATION_DST="${MIGRATION_DST_DIR}/migrate_phase1.py"
+mkdir -p "$MIGRATION_DST_DIR"
+if [ -f "$MIGRATION_SRC" ]; then
+  cp "$MIGRATION_SRC" "$MIGRATION_DST"
+  chmod +x "$MIGRATION_DST" 2>/dev/null || true
+  if python3 "$MIGRATION_DST"; then
+    _ok "Phase 1 migration complete"
+  else
+    _fail "Phase 1 migration failed — see error above"
+    exit 1
+  fi
+else
+  _warn "scripts/migrate_phase1.py not found — skipping migration step"
+fi
 
 # ── Step 5: Symlink CLI ──────────────────────────────────────────────────────
 _step "Installing CLI..."
