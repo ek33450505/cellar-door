@@ -97,7 +97,57 @@ else
   _warn "scripts/migrate_phase1.py not found — skipping migration step"
 fi
 
-# ── Step 5: Symlink CLI ──────────────────────────────────────────────────────
+# ── Step 5: Wire UserPromptSubmit hook (--yes required) ─────────────────────
+_step "Wiring UserPromptSubmit hook..."
+SETTINGS_FILE="${HOME}/.claude/settings.local.json"
+HOOK_CMD="python3 ~/.claude/scripts/cellar-door/cast-memory-inject.py"
+
+# Copy the hook script first so the path in settings.local.json points at a real file
+HOOK_SRC="${REPO_DIR}/scripts/cast-memory-inject.py"
+HOOK_DST_DIR="${HOME}/.claude/scripts/cellar-door"
+HOOK_DST="${HOOK_DST_DIR}/cast-memory-inject.py"
+mkdir -p "$HOOK_DST_DIR"
+if [ -f "$HOOK_SRC" ]; then
+  cp "$HOOK_SRC" "$HOOK_DST"
+  chmod +x "$HOOK_DST" 2>/dev/null || true
+  _ok "Hook script installed → $HOOK_DST"
+fi
+
+if [[ "${1:-}" == "--yes" ]]; then
+  # Idempotency check: skip if cast-memory-inject is already referenced
+  if [ -f "$SETTINGS_FILE" ] && python3 -c "
+import json, sys
+try:
+    d = json.load(open('$SETTINGS_FILE'))
+except Exception:
+    sys.exit(1)
+hooks = d.get('hooks', {}).get('UserPromptSubmit', [])
+for entry in hooks:
+    for h in entry.get('hooks', []):
+        if 'cast-memory-inject' in h.get('command', ''):
+            sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+    _ok "Hook already present in settings.local.json (idempotent)"
+  else
+    # Merge using jq
+    if command -v jq &>/dev/null; then
+      SNIPPET="${REPO_DIR}/scripts/cellar-door-hook-snippet.json"
+      EXISTING="$(cat "$SETTINGS_FILE" 2>/dev/null || echo '{}')"
+      echo "$EXISTING" | jq --slurpfile snippet "$SNIPPET" \
+        '.hooks.UserPromptSubmit += $snippet[0].hooks.UserPromptSubmit' \
+        > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+      _ok "Hook wired into settings.local.json"
+    else
+      _warn "jq not found — manually add hook entry from scripts/cellar-door-hook-snippet.json"
+    fi
+  fi
+else
+  _warn "Skipping settings merge (pass --yes to auto-merge):"
+  printf "    bash install.sh --yes\n"
+fi
+
+# ── Step 6: Symlink CLI ──────────────────────────────────────────────────────
 _step "Installing CLI..."
 LOCAL_BIN="${HOME}/.local/bin"
 CLI_SRC="${REPO_DIR}/bin/cellar"
@@ -126,5 +176,6 @@ printf "\n${C_BOLD}════════════════════�
 printf "${C_GREEN}cellar-door v${VERSION} installed.${C_RESET}\n\n"
 printf "  Scripts: ${SCRIPTS_DST} (${copied} files)\n"
 printf "\n${C_BOLD}Next steps:${C_RESET}\n"
-printf "  Phase 1 will add the schema migration and memory injection hook.\n"
+printf "  Phase 2 hook installed. Enable with: CAST_COG_ENABLED=1 claude\n"
+printf "  Or add to ~/.zshrc: export CAST_COG_ENABLED=1\n"
 printf "  See ~/.claude/plans/cast-shared-cognition-roadmap.md for the full build plan.\n\n"

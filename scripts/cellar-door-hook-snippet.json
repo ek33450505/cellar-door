@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/cellar-door/cast-memory-inject.py",
+            "timeout": 1000
+          }
+        ]
+      }
+    ]
+  }
+}
