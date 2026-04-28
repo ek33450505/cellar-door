@@ -100,10 +100,13 @@ def _parse_confidence(val: str) -> float:
 
 # ── Write-back ────────────────────────────────────────────────────────────────
 def write_facts(facts: list[dict]) -> int:
-    """Write facts to agent_memories. Returns count written."""
+    """Write facts to agent_memories with supersession.
+
+    For each fact: if a current row exists for (agent='shared', name),
+    set old.valid_to = now and old.superseded_by = new_id, then insert the new row.
+    Returns count of new rows inserted.
+    """
     sys.path.insert(0, os.path.expanduser("~/.claude/scripts"))
-    # cast_db._connect() reads CAST_DB_PATH from env — set it before calling.
-    # (Do NOT pass db_path as an argument; _connect() takes none.)
     db_path = os.environ.get("CAST_DB_PATH", os.path.expanduser("~/.claude/cast.db"))
     os.environ["CAST_DB_PATH"] = db_path
     from cast_db import _connect  # type: ignore
@@ -114,32 +117,43 @@ def write_facts(facts: list[dict]) -> int:
 
     try:
         conn.execute("BEGIN IMMEDIATE")
+
         for fact in facts:
+            # 1. Check for existing current row with same name
+            existing = conn.execute(
+                "SELECT id FROM agent_memories WHERE agent = 'shared' AND name = ? AND valid_to IS NULL",
+                (fact["name"],)
+            ).fetchone()
+
+            # 2. Insert new row first (need its id for superseded_by)
             conn.execute(
                 """
-                INSERT OR IGNORE INTO agent_memories
+                INSERT INTO agent_memories
                     (agent, type, name, description, content,
                      source_type, confidence, importance, decay_rate,
-                     created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'inference', ?, 0.5, 0.0, ?, ?)
+                     valid_from, created_at, updated_at)
+                VALUES ('shared', ?, ?, ?, ?, 'inference', ?, 0.5, 0.0, ?, ?, ?)
                 """,
                 (
-                    "shared",
-                    fact["type"],
-                    fact["name"],
-                    fact["description"],
-                    fact["content"],
-                    fact["confidence"],
-                    now,
-                    now,
+                    fact["type"], fact["name"], fact["description"],
+                    fact["content"], fact["confidence"],
+                    now, now, now,
                 ),
             )
-            if conn.execute(
-                "SELECT changes()"
-            ).fetchone()[0] > 0:
-                written += 1
+            new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            written += 1
+
+            # 3. Supersede old row if it existed
+            if existing:
+                old_id = existing[0]
+                conn.execute(
+                    "UPDATE agent_memories SET valid_to = ?, superseded_by = ? WHERE id = ?",
+                    (now, new_id, old_id),
+                )
+                _log(f"superseded fact id={old_id} with new id={new_id} (name={fact['name']!r})")
             else:
-                _log(f"duplicate skipped (INSERT OR IGNORE): {fact['name']!r}")
+                _log(f"inserted new fact id={new_id} (name={fact['name']!r})")
+
         conn.execute("COMMIT")
     except Exception as e:
         conn.execute("ROLLBACK")

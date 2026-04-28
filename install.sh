@@ -97,6 +97,23 @@ else
   _warn "scripts/migrate_phase1.py not found — skipping migration step"
 fi
 
+# ── Step 4b: Phase 1.5 migration ─────────────────────────────────────────────
+_step "Running Phase 1.5 migration..."
+MIGRATION15_SRC="${REPO_DIR}/scripts/migrate_phase1_5.py"
+MIGRATION15_DST="${MIGRATION_DST_DIR}/migrate_phase1_5.py"
+if [ -f "$MIGRATION15_SRC" ]; then
+  cp "$MIGRATION15_SRC" "$MIGRATION15_DST"
+  chmod +x "$MIGRATION15_DST" 2>/dev/null || true
+  if python3 "$MIGRATION15_DST"; then
+    _ok "Phase 1.5 migration complete"
+  else
+    _fail "Phase 1.5 migration failed — see error above"
+    exit 1
+  fi
+else
+  _warn "scripts/migrate_phase1_5.py not found — skipping Phase 1.5 migration"
+fi
+
 # ── Step 5: Wire UserPromptSubmit hook (--yes required) ─────────────────────
 _step "Wiring UserPromptSubmit hook..."
 SETTINGS_FILE="${HOME}/.claude/settings.local.json"
@@ -203,6 +220,26 @@ else
     fi
   else
     _warn "Could not create ~/.local/bin — run from repo: ${CLI_SRC}"
+  fi
+fi
+
+# ── Step 7b: Install cast-memory CLI ─────────────────────────────────────────
+_step "Installing cast-memory CLI..."
+CAST_MEMORY_SRC="${REPO_DIR}/bin/cast-memory"
+CAST_MEMORY_DST="${LOCAL_BIN}/cast-memory"
+
+if [ ! -f "$CAST_MEMORY_SRC" ]; then
+  _warn "bin/cast-memory not found — skipping"
+else
+  if mkdir -p "$LOCAL_BIN" 2>/dev/null; then
+    if cp "$CAST_MEMORY_SRC" "$CAST_MEMORY_DST" 2>/dev/null; then
+      chmod +x "$CAST_MEMORY_DST"
+      _ok "cast-memory → ~/.local/bin/cast-memory"
+    else
+      _warn "Could not copy cast-memory to ~/.local/bin"
+    fi
+  else
+    _warn "Could not create ~/.local/bin"
   fi
 fi
 

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# cast-memory — Cellar Door CLI for inspecting agent_memories
+# Usage:
+#   cast-memory history <name>            — supersession chain for a fact name
+#   cast-memory at <timestamp>            — all facts current at given timestamp
+#   cast-memory ls [--agent <a>]          — list current facts
+#
+# Security note: NAME, TS, and AGENT values are interpolated into sqlite3 shell
+# SQL strings. Single-quotes are escaped via ${var//\'/\'\'} to prevent trivial
+# injection. This is a local admin tool, not a web-facing service.
+set -euo pipefail
+
+DB="${CAST_DB_PATH:-${HOME}/.claude/cast.db}"
+CMD="${1:-}"
+
+_usage() {
+  cat >&2 <<'EOF'
+Usage:
+  cast-memory history <name>          Supersession chain for a fact by name
+  cast-memory at <timestamp>          Facts current at a point in time (ISO 8601 or 'now')
+  cast-memory ls [--agent <agent>]    List all current facts
+EOF
+  exit 1
+}
+
+case "$CMD" in
+  history)
+    NAME="${2:-}"
+    [[ -z "$NAME" ]] && { echo "Error: name required" >&2; _usage; }
+    sqlite3 -header -column "$DB" \
+      "SELECT id, agent, name, content, valid_from, valid_to, superseded_by
+         FROM agent_memories
+        WHERE name = '${NAME//\'/\'\'}'
+        ORDER BY id ASC;"
+    ;;
+  at)
+    TS="${2:-}"
+    [[ -z "$TS" ]] && { echo "Error: timestamp required" >&2; _usage; }
+    [[ "$TS" == "now" ]] && TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    sqlite3 -header -column "$DB" \
+      "SELECT id, agent, name, type, content, valid_from, valid_to
+         FROM agent_memories
+        WHERE valid_from <= '${TS//\'/\'\'}'
+          AND (valid_to IS NULL OR valid_to > '${TS//\'/\'\'}')"
+    ;;
+  ls)
+    AGENT_FILTER=""
+    if [[ "${2:-}" == "--agent" ]]; then
+      AGENT_FILTER="AND agent = '${3//\'/\'\'}'";
+    fi
+    sqlite3 -header -column "$DB" \
+      "SELECT id, agent, name, type, confidence, valid_from
+         FROM agent_memories
+        WHERE valid_to IS NULL ${AGENT_FILTER}
+        ORDER BY agent, name;"
+    ;;
+  *)
+    _usage
+    ;;
+esac
