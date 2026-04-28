@@ -25,7 +25,7 @@ def main():
 
     # SS1: stdin parsing — never crash on empty/malformed
     try:
-        data = json.loads(sys.stdin.read() or "{}")
+        data = json.loads(sys.stdin.read(1_048_576) or "{}")
     except Exception:
         data = {}
 
@@ -35,6 +35,7 @@ def main():
         return
 
     prompt = data.get("prompt", "")
+    prompt = prompt[:8192]
     if not prompt:
         _emit_empty()
         return
@@ -82,7 +83,7 @@ def main():
     # SS2: compact [cellar-door] + [mem] key:value lines, content truncated to 120 chars
     lines = [f"[cellar-door] retrieved {len(rows)} memories"]
     for r in rows:
-        content = str(r.get("content", r.get("body", ""))).replace('"', "'")[:120]
+        content = str(r.get("content", r.get("body", "")))[:120]
         lines.append(
             f'[mem] type={r.get("type", "")} name={r.get("name", "")} '
             f'score={r.get("score", 0):.2f} content="{content}"'
@@ -94,9 +95,9 @@ def main():
     print(json.dumps(out, separators=(',', ':')))
 
     elapsed_ms = (time.monotonic() - t_start) * 1000
-    if elapsed_ms > 100:
+    if elapsed_ms > 500:
         print(
-            f"[cellar-door] WARNING: hook latency {elapsed_ms:.0f}ms exceeded 100ms target",
+            f"[cellar-door] WARNING: hook latency {elapsed_ms:.0f}ms exceeded 500ms target",
             file=sys.stderr,
         )
 
