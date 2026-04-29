@@ -16,8 +16,11 @@ Defaults overridable via env vars:
 import sys
 import os
 import json
+import sqlite3
 import subprocess
 import time
+import threading
+import hashlib
 
 
 def main():
@@ -94,12 +97,84 @@ def main():
     out = {"hookSpecificOutput": {"additionalContext": context}}
     print(json.dumps(out, separators=(',', ':')))
 
+    # Fire-and-forget injection log writes — must not block the main thread.
+    # The thread is daemon=True so it does not delay process exit.
+    session_id = data.get("session_id") or os.environ.get("CAST_SESSION_ID", "")
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+    t_log = threading.Thread(
+        target=_log_injections,
+        args=(session_id, prompt_hash, rows),
+        daemon=True,
+    )
+    t_log.start()
+    # Fire-and-forget: no join. Daemon thread races with process exit.
+    # Partial log rows are acceptable per spec; blocking is not.
+
     elapsed_ms = (time.monotonic() - t_start) * 1000
     if elapsed_ms > 500:
         print(
             f"[cellar-door] WARNING: hook latency {elapsed_ms:.0f}ms exceeded 500ms target",
             file=sys.stderr,
         )
+
+
+def _resolve_db_path() -> str:
+    """Resolve DB path from env var. Return empty string if outside allowed dirs (path-traversal guard)."""
+    from pathlib import Path
+    raw = os.environ.get('CAST_DB_PATH', str(Path.home() / '.claude' / 'cast.db'))
+    resolved = str(Path(raw).resolve())
+
+    allowed_prefixes = (
+        str(Path.home() / '.claude'),
+        str(Path.home() / 'Projects'),
+        '/tmp',
+        '/private/tmp',
+        '/var/folders',
+        '/private/var/folders',
+    )
+
+    def _is_allowed(r: str, prefix: str) -> bool:
+        p = prefix.rstrip(os.sep)
+        return r == p or r.startswith(p + os.sep)
+
+    if not any(_is_allowed(resolved, p) for p in allowed_prefixes):
+        print(
+            f"[injection_log] CAST_DB_PATH resolves to '{resolved}' which is outside allowed directories.",
+            file=sys.stderr,
+        )
+        return ""
+
+    return resolved
+
+
+def _log_injections(session_id: str, prompt_hash: str, facts: list) -> None:
+    """Write injection_log rows for each retrieved fact. Runs in a background daemon thread."""
+    try:
+        db_path = _resolve_db_path()
+        if not db_path:
+            return
+        conn = sqlite3.connect(db_path, timeout=2)
+        for fact in facts:
+            fact_id = fact.get('id')
+            if fact_id is None:
+                continue
+            score = fact.get('score')
+            breakdown = fact.get('score_breakdown')
+            conn.execute(
+                """INSERT INTO injection_log (session_id, prompt_hash, fact_id, score, score_breakdown)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    prompt_hash,
+                    fact_id,
+                    score,
+                    json.dumps(breakdown) if breakdown else None,
+                ),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[injection_log] background write failed: {e}", file=sys.stderr)
 
 
 def _emit_empty():
