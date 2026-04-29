@@ -110,14 +110,10 @@ def run_migration(db_path: str) -> None:
             if _add_column(conn, col_def):
                 columns_added += 1
 
-        # ── Step 2: UNIQUE index on (agent, name) ────────────────────────────
-        # Partial index: excludes NULL names so NULL != NULL semantics don't bite.
-        # Pre-check confirmed zero duplicates in existing 48 rows — no dedup pass needed.
-        conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memories_agent_name
-            ON agent_memories(agent, name)
-            WHERE name IS NOT NULL
-        """)
+        # ── Step 2: Drop UNIQUE index on (agent, name) if it exists ─────────────
+        # Phase 1.5 dropped this index — supersession model uses INSERT + retroactive
+        # UPDATE, not ON CONFLICT. A UNIQUE index would reject valid re-inserts.
+        conn.execute("DROP INDEX IF EXISTS idx_agent_memories_agent_name")
 
         # ── Step 3: Backfill legacy rows ──────────────────────────────────────
         # Guard: WHERE source_type IS NULL ensures idempotency.

@@ -5,13 +5,28 @@
 # Resolve repo root relative to this test file
 REPO_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
-# Setup: copy cast.db to temp location, set CAST_DB_PATH
+# Setup: create a fresh minimal SQLite DB with deterministic pre-migration rows
 setup() {
-  # Create temp DB for this test
-  export CAST_DB_PATH="$BATS_TMPDIR/test.db"
-
-  # Copy the real cast.db to temp location for testing (do not mutate the real DB)
-  cp ~/.claude/cast.db "$CAST_DB_PATH"
+  export CAST_DB_PATH="$BATS_TMPDIR/test_phase1_$BATS_TEST_NUMBER.db"
+  # Create a minimal pre-migration schema (no Phase 1 columns yet)
+  sqlite3 "$CAST_DB_PATH" <<'SQL'
+CREATE TABLE agent_memories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'user',
+  name TEXT NOT NULL,
+  description TEXT,
+  content TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+INSERT INTO agent_memories (agent, type, name, description, content) VALUES
+  ('planner',   'user',     'fact1', 'desc1', 'content1'),
+  ('planner',   'feedback', 'fact2', 'desc2', 'content2'),
+  ('shared',    'project',  'fact3', 'desc3', 'content3'),
+  ('debugger',  'user',     'fact4', 'desc4', 'content4'),
+  ('committer', 'reference','fact5', 'desc5', 'content5');
+SQL
 }
 
 # Cleanup: remove temp DB after test
@@ -62,33 +77,32 @@ teardown() {
   [[ "$output" == *"agent_memories_fts"* ]]
 }
 
-@test "FTS5 row count matches agent_memories count (48 rows)" {
+@test "FTS5 row count matches agent_memories count" {
   python3 "$REPO_DIR/scripts/migrate_phase1.py"
-  run sqlite3 "$CAST_DB_PATH" "SELECT COUNT(*) FROM agent_memories_fts;"
+  # Get both counts and compare them — no hardcoded row number
+  fts_count=$(sqlite3 "$CAST_DB_PATH" "SELECT COUNT(*) FROM agent_memories_fts;")
+  am_count=$(sqlite3  "$CAST_DB_PATH" "SELECT COUNT(*) FROM agent_memories;")
   [[ "$status" -eq 0 ]]
-  [[ "$output" =~ ^[0-9]+$ ]]  # numeric output
-  [[ "$output" -eq 48 ]]
+  [[ "$fts_count" -eq "$am_count" ]]
 }
 
 # ── Backfill validation ──────────────────────────────────────────────────────
 
 @test "legacy rows have source_type='legacy' after backfill" {
   python3 "$REPO_DIR/scripts/migrate_phase1.py"
-  run sqlite3 "$CAST_DB_PATH" \
-    "SELECT COUNT(*) FROM agent_memories WHERE source_type='legacy';"
-  [[ "$status" -eq 0 ]]
-  [[ "$output" =~ ^[0-9]+$ ]]
-  [[ "$output" -eq 48 ]]
+  legacy_count=$(sqlite3 "$CAST_DB_PATH" "SELECT COUNT(*) FROM agent_memories WHERE source_type='legacy';")
+  total_count=$(sqlite3  "$CAST_DB_PATH" "SELECT COUNT(*) FROM agent_memories;")
+  [[ "$legacy_count" -eq "$total_count" ]]
 }
 
 # ── UNIQUE index validation ──────────────────────────────────────────────────
 
-@test "UNIQUE index idx_agent_memories_agent_name exists on (agent, name)" {
+@test "UNIQUE index idx_agent_memories_agent_name does NOT exist (Phase 1.5 drop)" {
   python3 "$REPO_DIR/scripts/migrate_phase1.py"
   run sqlite3 "$CAST_DB_PATH" \
     "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_agent_memories_agent_name';"
   [[ "$status" -eq 0 ]]
-  [[ "$output" == *"idx_agent_memories_agent_name"* ]]
+  [[ -z "$output" ]]  # index must NOT be present post-Phase-1.5
 }
 
 # ── FTS5 trigger validation: insert ──────────────────────────────────────────
