@@ -16,9 +16,11 @@ CMD="${1:-}"
 _usage() {
   cat >&2 <<'EOF'
 Usage:
-  cast-memory history <name>          Supersession chain for a fact by name
-  cast-memory at <timestamp>          Facts current at a point in time (ISO 8601 or 'now')
-  cast-memory ls [--agent <agent>]    List all current facts
+  cast-memory history <name>                             Supersession chain for a fact by name
+  cast-memory at <timestamp>                             Facts current at a point in time (ISO 8601 or 'now')
+  cast-memory ls [--agent <agent>]                       List all current facts
+  cast-memory prune --before <Nd|Ny|Nh> [--type <type>] [--dry-run]
+                                                         Delete old superseded and legacy rows
 EOF
   exit 1
 }
@@ -53,6 +55,92 @@ case "$CMD" in
          FROM agent_memories
         WHERE valid_to IS NULL ${AGENT_FILTER}
         ORDER BY agent, name;"
+    ;;
+  prune)
+    BEFORE=""
+    TYPE_FILTER=""
+    DRY_RUN=0
+
+    shift  # consume 'prune'
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --before)  BEFORE="${2:-}"; shift 2 ;;
+        --type)    TYPE_FILTER="${2:-}"; shift 2 ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        *) echo "Unknown option: $1" >&2; _usage ;;
+      esac
+    done
+
+    [[ -z "$BEFORE" ]] && { echo "Error: --before is required" >&2; _usage; }
+
+    # Defense-in-depth: allowlist for --type values
+    if [[ -n "$TYPE_FILTER" ]]; then
+      case "$TYPE_FILTER" in
+        user|feedback|project|reference|procedural) ;;
+        *) echo "Error: invalid --type '${TYPE_FILTER}'. Valid values: user, feedback, project, reference, procedural" >&2; exit 1 ;;
+      esac
+    fi
+
+    # Parse duration to seconds
+    if [[ "$BEFORE" =~ ^([0-9]+)d$ ]]; then
+      SECS=$(( ${BASH_REMATCH[1]} * 86400 ))
+    elif [[ "$BEFORE" =~ ^([0-9]+)y$ ]]; then
+      SECS=$(( ${BASH_REMATCH[1]} * 365 * 86400 ))
+    elif [[ "$BEFORE" =~ ^([0-9]+)h$ ]]; then
+      SECS=$(( ${BASH_REMATCH[1]} * 3600 ))
+    else
+      echo "Error: --before must be Nd, Ny, or Nh (e.g. 90d, 1y, 24h)" >&2; exit 1
+    fi
+
+    # Compute cutoff timestamp — macOS uses -v flag; GNU date uses -d flag
+    if date --version >/dev/null 2>&1; then
+      CUTOFF=$(date -u -d "-${SECS} seconds" +"%Y-%m-%dT%H:%M:%SZ")
+    else
+      CUTOFF=$(date -u -v-${SECS}S +"%Y-%m-%dT%H:%M:%SZ")
+    fi
+
+    TYPE_CLAUSE=""
+    if [[ -n "$TYPE_FILTER" ]]; then
+      TYPE_CLAUSE="AND type = '${TYPE_FILTER//\'/\'\'}'"
+    fi
+
+    COUNT=$(sqlite3 "$DB" "
+      SELECT COUNT(*) FROM agent_memories
+      WHERE (
+        (valid_to IS NOT NULL AND valid_to < '${CUTOFF//\'/\'\'}'  )
+        OR
+        (valid_to IS NULL AND created_at < '${CUTOFF//\'/\'\'}' AND source_type = 'legacy')
+      )
+      ${TYPE_CLAUSE};
+    ")
+
+    if [[ "$COUNT" -eq 0 ]]; then
+      echo "No rows match the prune criteria."
+      exit 0
+    fi
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      echo "[dry-run] Would delete $COUNT row(s) older than $BEFORE (cutoff: $CUTOFF)"
+      exit 0
+    fi
+
+    printf "Delete %d row(s) older than %s? [y/N]: " "$COUNT" "$BEFORE"
+    read -r CONFIRM
+    if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
+      echo "Aborted."
+      exit 0
+    fi
+
+    sqlite3 "$DB" "
+      DELETE FROM agent_memories
+      WHERE (
+        (valid_to IS NOT NULL AND valid_to < '${CUTOFF//\'/\'\'}'  )
+        OR
+        (valid_to IS NULL AND created_at < '${CUTOFF//\'/\'\'}' AND source_type = 'legacy')
+      )
+      ${TYPE_CLAUSE};
+    "
+    echo "Deleted $COUNT row(s)."
     ;;
   *)
     _usage
