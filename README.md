@@ -18,6 +18,9 @@ No daemon, no port, no cloud.
 - Phase 0: scaffold complete
 - Phase 1: schema migration + FTS5 (live)
 - Phase 2: UserPromptSubmit injection hook (live)
+- Phase 3: SubagentStop write-back hook (live)
+- Phase 4: supersession + temporal queries + cast-memory CLI (live)
+- Phase 5: CCR/Ollama parity verified (live)
 
 ## Install
 
@@ -79,6 +82,22 @@ configuration needed.
 Target: <100ms p95. FTS-only retrieval (no Ollama embed call) typically runs in
 10–30ms. The hook self-monitors and logs a warning to stderr if latency exceeds 100ms.
 Hook never blocks the prompt — any error path exits 0 with empty `additionalContext`.
+
+## Model-Agnostic Guarantee (Phase 5)
+
+Cellar Door's memory hooks are model-agnostic by design. The inject and write-back
+hooks talk to `cast.db` — not to the LLM. Whether a session runs via `claude` (Anthropic)
+or `ccr` (Ollama/deepseek-coder), the same hook fires on `UserPromptSubmit` and
+`SubagentStop`, reading from and writing to the same fact store.
+
+**Empirically verified (2026-04-28):** BATS regression tests in `tests/test_parity_inject.bats`
+and `tests/test_parity_writeback.bats` assert identical retrieve and write-back outcomes
+for both backends against a fixed fact corpus.
+
+To run parity tests:
+```bash
+bats tests/test_parity_inject.bats tests/test_parity_writeback.bats
+```
 
 ## Architecture
 
