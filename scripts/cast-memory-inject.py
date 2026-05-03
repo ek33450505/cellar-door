@@ -94,7 +94,7 @@ def main():
     context = "\n".join(lines)
 
     # SS6: emit valid JSON (compact separators so BATS regex matches work)
-    out = {"hookSpecificOutput": {"additionalContext": context}}
+    out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context}}
     print(json.dumps(out, separators=(',', ':')))
 
     # Fire-and-forget injection log writes — must not block the main thread.
@@ -178,7 +178,7 @@ def _log_injections(session_id: str, prompt_hash: str, facts: list) -> None:
 
 
 def _emit_empty():
-    print(json.dumps({"hookSpecificOutput": {"additionalContext": ""}}, separators=(',', ':')))
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ""}}, separators=(',', ':')))
 
 
 if __name__ == "__main__":
