@@ -149,8 +149,14 @@ def invalidate_memory(memory_id):
     )
 
 
-def retrieve_memories(prompt, agent, top_n=5, type_filter=None, include_history=False, fts_only=False):
-    """Return top-N memories for agent, ranked by relevance. Includes shared pool."""
+def retrieve_memories(prompt, agent, top_n=5, type_filter=None, include_history=False,
+                      fts_only=False, project_filter=None):
+    """Return top-N memories for agent, ranked by relevance. Includes shared pool.
+
+    project_filter — when set, narrow results to memories where am.project = project_filter.
+    If the agent_memories table lacks a 'project' column (pre-Phase-1.5 install), the filter
+    is silently ignored and memories are returned without project narrowing.
+    """
     conn = _connect()
 
     # Check FTS availability
@@ -175,6 +181,17 @@ def retrieve_memories(prompt, agent, top_n=5, type_filter=None, include_history=
     type_clause = "AND am.type = ?" if type_filter else ""
     type_params = (type_filter,) if type_filter else ()
 
+    # E-16: project filter — graceful degradation if 'project' column is absent.
+    if project_filter and 'project' in column_names:
+        project_clause = "AND am.project = ?"
+        project_params = (project_filter,)
+    else:
+        if project_filter and 'project' not in column_names:
+            print("router: project column absent in agent_memories, ignoring --project filter",
+                  file=sys.stderr)
+        project_clause = ""
+        project_params = ()
+
     rows = []
 
     if has_fts:
@@ -189,10 +206,11 @@ def retrieve_memories(prompt, agent, top_n=5, type_filter=None, include_history=
                     AND (am.agent = ? OR am.agent = 'shared')
                     {temporal_clause}
                     {type_clause}
+                    {project_clause}
                     ORDER BY fts.rank
                     LIMIT 50
                 """
-                params = (safe_prompt, agent) + type_params
+                params = (safe_prompt, agent) + type_params + project_params
                 rows = conn.execute(sql, params).fetchall()
             except sqlite3.OperationalError:
                 # FTS query failed — fall through to full scan
@@ -206,8 +224,9 @@ def retrieve_memories(prompt, agent, top_n=5, type_filter=None, include_history=
             WHERE (am.agent = ? OR am.agent = 'shared')
             {temporal_clause}
             {type_clause}
+            {project_clause}
         """
-        params = (agent,) + type_params
+        params = (agent,) + type_params + project_params
         rows = conn.execute(sql, params).fetchall()
 
     # Build column_names + 'rank' for scoring
@@ -293,6 +312,8 @@ def main():
                         help='Skip Ollama embed call; use cosine_sim=0.0 (faster, ~10-30ms)')
     parser.add_argument('--invalidate', type=int, default=None, metavar='ID',
                         help='Mark memory with given ID as superseded (sets valid_to=now) and exit')
+    parser.add_argument('--project', type=str, default=None,
+                        help='Filter memories by project field (retrieve mode)')
     args = parser.parse_args()
 
     null_result = json.dumps({"agent": None, "confidence": 0.0})
@@ -360,7 +381,8 @@ def main():
             results = retrieve_memories(prompt, agent, top_n=args.top_n,
                                         type_filter=type_filter,
                                         include_history=args.history,
-                                        fts_only=args.fts_only)
+                                        fts_only=args.fts_only,
+                                        project_filter=args.project)
 
             # Get column names for building output dicts
             col_rows = db_query("PRAGMA table_info(agent_memories)")
