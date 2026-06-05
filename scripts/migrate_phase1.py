@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Cellar Door Phase 1 — Schema Migration
-Adds provenance/scoring columns, FTS5 virtual table, sync triggers, and backfills 48 legacy rows.
+Adds provenance/scoring columns, FTS5 virtual table, sync triggers, and backfills existing rows.
 
-Pre-check 2026-04-28: 48 rows, no duplicates — UNIQUE index added without dedup pass.
-(bash-specialist confirmed zero duplicate (agent, name) pairs in existing 48 rows.)
+Idempotent: safe to run multiple times. Uses CREATE TABLE IF NOT EXISTS and
+ADD COLUMN with try/except for existing-column errors.
 """
 
 import os

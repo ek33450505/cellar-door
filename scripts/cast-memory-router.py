@@ -29,10 +29,12 @@ import math
 import argparse
 import sqlite3
 import struct
+import urllib.parse
+import hashlib
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cast_db import db_query, db_execute, _connect
+from cast_db import db_query, db_execute, db_write, _connect
 
 STOP_WORDS = {
     'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -47,15 +49,31 @@ STOP_WORDS = {
     'very', 'just', 'also', 'as', 'up', 'if', 'then', 'into', 'about',
 }
 
-VALID_TYPES = {'user', 'feedback', 'project', 'reference', 'procedural'}
+VALID_TYPES = {'user', 'feedback', 'project', 'reference', 'procedural', 'user_profile'}
 
 OLLAMA_EMBED_URL = 'http://localhost:11434/api/embed'
 EMBED_MODEL = 'nomic-embed-text'
+
+_ALLOWED_EMBED_HOSTS = {'localhost', '127.0.0.1', '::1'}
+
+
+def _is_safe_url(url: str) -> bool:
+    """Return True only if url has an allowed scheme and a local hostname."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ('http', 'https'):
+        return False
+    hostname = parsed.hostname or ''
+    return hostname in _ALLOWED_EMBED_HOSTS
 
 
 def embed_text(text, timeout=3):
     """Call Ollama embed API. Returns list[float] or None on any error."""
     try:
+        if not _is_safe_url(OLLAMA_EMBED_URL):
+            raise ValueError(f"Unsafe Ollama embed URL: {OLLAMA_EMBED_URL!r}")
         import urllib.request
         payload = json.dumps({"model": EMBED_MODEL, "input": text}).encode('utf-8')
         req = urllib.request.Request(
@@ -147,6 +165,34 @@ def invalidate_memory(memory_id):
         "UPDATE agent_memories SET valid_to = datetime('now') WHERE id = ?",
         (memory_id,)
     )
+
+
+def _log_injection(session_id: str, prompt: str, fact_id: int, score: float,
+                   score_breakdown_dict: dict) -> None:
+    """Write one row to injection_log for each fact that survives the score threshold.
+
+    injection_log.id is an INTEGER primary key (autoincrement) — omit it so SQLite
+    assigns it automatically. fact_id is INTEGER NOT NULL so we skip logging if it is
+    None (e.g. a memory row with no integer id).
+    """
+    try:
+        if fact_id is None:
+            return  # fact_id NOT NULL — skip rows without a numeric id
+        prompt_hash = hashlib.md5((prompt or '').encode('utf-8')).hexdigest()
+        db_write('injection_log', {
+            'session_id': session_id,
+            'prompt_hash': prompt_hash,
+            'fact_id': int(fact_id),
+            'score': float(score),
+            'score_breakdown': json.dumps(score_breakdown_dict),
+            'injected_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        })
+    except Exception as e:
+        try:
+            from cast_db import log_hook_failure
+            log_hook_failure('cast-memory-router:injection_log', -1, str(e), session_id)
+        except Exception:
+            pass
 
 
 def retrieve_memories(prompt, agent, top_n=5, type_filter=None, include_history=False,
@@ -314,6 +360,8 @@ def main():
                         help='Mark memory with given ID as superseded (sets valid_to=now) and exit')
     parser.add_argument('--project', type=str, default=None,
                         help='Filter memories by project field (retrieve mode)')
+    parser.add_argument('--session-id', type=str, default=None,
+                        help='Session ID for injection_log telemetry (retrieve mode)')
     args = parser.parse_args()
 
     null_result = json.dumps({"agent": None, "confidence": 0.0})
@@ -378,6 +426,7 @@ def main():
         if args.mode == 'retrieve':
             agent = args.agent or 'shared'
             type_filter = args.type
+            session_id = args.session_id or os.environ.get('CAST_SESSION_ID', '')
             results = retrieve_memories(prompt, agent, top_n=args.top_n,
                                         type_filter=type_filter,
                                         include_history=args.history,
@@ -396,6 +445,18 @@ def main():
                     mem_dict[col] = row_list[i] if i < len(row_list) else None
                 mem_dict['score'] = round(score, 4)
                 output.append(mem_dict)
+                # Log each injected fact to injection_log for observability
+                _log_injection(
+                    session_id=session_id,
+                    prompt=prompt,
+                    fact_id=mem_dict.get('id'),
+                    score=score,
+                    score_breakdown_dict={
+                        'fts_rank': row_list[-1] if row_list else 0.0,
+                        'cosine_sim': mem_dict.get('score', 0.0),
+                        'agent': agent,
+                    },
+                )
 
             print(json.dumps(output, default=str))
             return
