@@ -101,7 +101,7 @@ bats tests/test_parity_inject.bats tests/test_parity_writeback.bats
 
 ## Architecture
 
-See `~/.claude/plans/cast-shared-cognition-roadmap.md` for the full phased build plan,
+See `research/` in this repo for design notes on the phased build plan,
 schema decisions, and injection-hook design.
 
 ## License
